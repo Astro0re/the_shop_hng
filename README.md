@@ -1,6 +1,6 @@
 # The Shop
 
-A small peer-to-peer marketplace MVP. It provides a responsive listings page, category and text search, Google sign-in, listing creation, and email confirmations for listing and buyer inquiry actions. It does not take payment or arrange delivery.
+A small peer-to-peer marketplace MVP. It provides a responsive listings page, category and text search, Google sign-in, listing creation, a guest checkout basket, account-gated additional basket items and saved finds, and email confirmations for listing and buyer inquiry actions. It does not take payment or arrange delivery.
 
 ## Run locally
 
@@ -15,7 +15,7 @@ Without Supabase browser settings, the frontend shows sample items so the layout
 
 ## Configuration
 
-See `.env.example` for the complete list. `VITE_` values are public browser configuration; never put the Supabase service role key or Mailgun API key in a `VITE_` variable. Configure allowed OAuth redirect URLs for each deployed domain. Set `APP_URL` to the public site origin before deployment.
+See `.env.example` for the complete list. Use the Supabase project root URL (for example, `https://<project-ref>.supabase.co`) for both Supabase URL settings; do not append `/rest/v1`, `/auth/v1`, or a dashboard path. `VITE_` values are public browser configuration; never put the Supabase service role key or Mailgun API key in a `VITE_` variable. Configure allowed OAuth redirect URLs for each deployed domain. Set `APP_URL` to the public site origin before deployment.
 
 ## Data and trust
 
@@ -23,6 +23,7 @@ See `.env.example` for the complete list. `VITE_` values are public browser conf
 - The Express API validates each bearer token with Supabase Auth before sending email. The service role key stays server-side.
 - Listings are public; seller contact email is not stored in the listing table or sent to the browser. For an inquiry, the server looks up the seller and emails buyer and seller directly.
 - No payment details are collected. Buyers and sellers arrange payment and handover directly; use public meeting places and safe payment practices.
+- A guest can put one listing in a temporary checkout basket. Signing in unlocks adding more listings and viewing saved finds. Signed-in baskets and saved listing IDs are kept in that browser's local storage, scoped to the account; they are not synced across devices.
 - Sample listing photos are remote Unsplash URLs. Sellers can provide a photo URL; managed image uploads are not included in this MVP.
 
 ## Current limits

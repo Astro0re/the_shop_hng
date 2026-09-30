@@ -9,7 +9,16 @@ const allowedOrigin = process.env.APP_URL || 'http://localhost:5173';
 app.use(cors({ origin: allowedOrigin }));
 app.use(express.json({ limit: '20kb' }));
 
-const ready = Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
+function isProjectRoot(value) {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'https:' && parsed.pathname === '/' && !parsed.search && !parsed.hash;
+  } catch {
+    return false;
+  }
+}
+
+const ready = Boolean(isProjectRoot(process.env.SUPABASE_URL) && process.env.SUPABASE_SERVICE_ROLE_KEY && !process.env.SUPABASE_SERVICE_ROLE_KEY.includes('your-supabase'));
 const admin = ready ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false, autoRefreshToken: false } }) : null;
 const mailgunReady = Boolean(process.env.MAILGUN_API_KEY && process.env.MAILGUN_DOMAIN && process.env.MAILGUN_FROM);
 

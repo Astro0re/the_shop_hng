@@ -13,6 +13,16 @@ const sampleItems = [
 ];
 const money = new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN', maximumFractionDigits: 0 });
 
+function readStoredJson(key, fallback) {
+  try { const value = JSON.parse(window.localStorage.getItem(key) || 'null'); return Array.isArray(value) ? value : fallback; }
+  catch { return fallback; }
+}
+
+function readGuestCart() {
+  try { const value = JSON.parse(window.sessionStorage.getItem('the-shop-guest-checkout') || '[]'); return Array.isArray(value) ? value : []; }
+  catch { return []; }
+}
+
 function App() {
   const [user, setUser] = useState(null);
   const [items, setItems] = useState(sampleItems);
@@ -25,6 +35,8 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [mobileMenu, setMobileMenu] = useState(false);
   const [favorites, setFavorites] = useState([]);
+  const [cart, setCart] = useState(readGuestCart);
+  const [page, setPage] = useState(() => readGuestCart().length ? 'checkout' : 'marketplace');
 
   useEffect(() => {
     if (!supabaseConfigured) return;
@@ -32,6 +44,29 @@ function App() {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => setUser(session?.user ?? null));
     return () => subscription.unsubscribe();
   }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    const accountCartKey = `the-shop-cart-${user.id}`;
+    const accountSavedKey = `the-shop-saved-${user.id}`;
+    const guestCart = readGuestCart();
+    const savedCart = readStoredJson(accountCartKey, []);
+    const combined = [...new Map([...savedCart, ...guestCart].map((item) => [item.id, item])).values()];
+    setCart(combined);
+    setFavorites(readStoredJson(accountSavedKey, []));
+    window.localStorage.setItem(accountCartKey, JSON.stringify(combined));
+    window.sessionStorage.removeItem('the-shop-guest-checkout');
+    if (guestCart.length) setPage('checkout');
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (user) {
+      window.localStorage.setItem(`the-shop-cart-${user.id}`, JSON.stringify(cart));
+      window.localStorage.setItem(`the-shop-saved-${user.id}`, JSON.stringify(favorites));
+    } else {
+      window.sessionStorage.setItem('the-shop-guest-checkout', JSON.stringify(cart));
+    }
+  }, [cart, favorites, user]);
 
   const loadItems = useCallback(async () => {
     if (!supabaseConfigured) return;
@@ -52,7 +87,7 @@ function App() {
     const { error } = await supabase.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: window.location.origin } });
     if (error) alertUser(error.message);
   }
-  async function signOut() { await supabase?.auth.signOut(); setUser(null); }
+  async function signOut() { await supabase?.auth.signOut(); setUser(null); setCart([]); setFavorites([]); setPage('marketplace'); }
   async function submitListing(event) {
     event.preventDefault();
     if (!user) { setModal({ type: 'signin' }); return; }
@@ -75,26 +110,52 @@ function App() {
     if (!response.ok) throw new Error(result.error || 'Email could not be sent.');
     return result;
   }
-  async function buyItem(item) {
-    if (!user) { setModal({ type: 'signin' }); return; }
-    if (user.id === item.seller_id) { alertUser('This is your listing.'); return; }
+  function addToCart(item) {
+    if (user?.id && user.id === item.seller_id) { alertUser('This is your listing.'); return; }
+    if (!user && cart.length > 0 && !cart.some((entry) => entry.id === item.id)) {
+      setModal({ type: 'signin', reason: 'more-items' });
+      return;
+    }
+    setCart((current) => current.some((entry) => entry.id === item.id) ? current : [...current, item]);
+    setModal(null);
+    setPage('checkout');
+  }
+  async function submitCheckout() {
+    if (!user) { setModal({ type: 'signin', reason: 'checkout' }); return; }
+    const eligibleItems = cart.filter((item) => item.seller_id !== user.id);
+    if (eligibleItems.length !== cart.length) { alertUser('Remove your own listings from the basket before continuing.'); return; }
+    if (!eligibleItems.length) { alertUser('Add a listing before continuing.'); return; }
     setBusy(true);
     try {
-      const mail = await sendActionEmail('purchase_inquiry', { listingId: item.id });
-      setModal(null); alertUser(mail.sent ? 'Your interest is confirmed. You and the seller will receive an email with next steps.' : 'Mailgun is not configured, so your inquiry email could not be sent.');
+      for (const item of eligibleItems) {
+        const result = await sendActionEmail('purchase_inquiry', { listingId: item.id });
+        if (!result.sent) throw new Error('Email confirmations are not configured yet, so seller inquiries were not sent. Your remaining basket is still saved.');
+        setCart((current) => current.filter((entry) => entry.id !== item.id));
+      }
+      setPage('marketplace');
+      alertUser('Your interest is confirmed. You and the sellers will receive an email with next steps.');
     } catch (error) { alertUser(error.message); }
     finally { setBusy(false); }
   }
-  function toggleFavorite(id) { setFavorites((current) => current.includes(id) ? current.filter((x) => x !== id) : [...current, id]); }
+  function toggleFavorite(id) {
+    if (!user) { setModal({ type: 'signin', reason: 'saved' }); return; }
+    setFavorites((current) => current.includes(id) ? current.filter((x) => x !== id) : [...current, id]);
+  }
 
   return <div className="app-shell">
     <div className="announcement"><Sparkles size={14} /> Good things deserve a second home <span className="announce-dot">·</span> A kinder way to shop</div>
     <header className="site-header">
       <a href="#top" className="brand" aria-label="The Shop home"><span className="brand-mark"><ShoppingBag size={19} strokeWidth={1.8} /></span><span>the shop<span className="brand-period">.</span></span></a>
       <nav className={`nav-links ${mobileMenu ? 'nav-open' : ''}`} aria-label="Main navigation"><a href="#marketplace" onClick={() => setMobileMenu(false)}>Discover</a><a href="#how-it-works" onClick={() => setMobileMenu(false)}>How it works</a><a href="#our-promise" onClick={() => setMobileMenu(false)}>Our promise</a></nav>
-      <div className="header-actions"><button className="sell-link" onClick={() => user ? setModal({ type: 'sell' }) : setModal({ type: 'signin' })}><Plus size={16} /> Sell an item</button>{user ? <button className="avatar-button" onClick={signOut} title="Sign out" aria-label="Sign out">{(user.user_metadata?.full_name || user.email || 'U').slice(0, 1).toUpperCase()}</button> : <button className="signin-button" onClick={signIn}>Sign in <ArrowUpRight size={15} /></button>}<button className="mobile-toggle" onClick={() => setMobileMenu(!mobileMenu)} aria-label="Toggle menu">{mobileMenu ? <X /> : <Menu />}</button></div>
+      <div className="header-actions"><button className="header-tool" onClick={() => setPage('checkout')} aria-label={`Basket, ${cart.length} items`}><ShoppingBag size={17} /><span>Basket</span>{cart.length > 0 && <b>{cart.length}</b>}</button>{user && <button className="header-tool saved-tool" onClick={() => setPage('saved')} aria-label="Saved finds" title="Saved finds"><Heart size={16} /><span>Saved</span>{favorites.length > 0 && <b>{favorites.length}</b>}</button>}<button className="sell-link" onClick={() => user ? setModal({ type: 'sell' }) : setModal({ type: 'signin', reason: 'sell' })}><Plus size={16} /> Sell an item</button>{user ? <button className="avatar-button" onClick={signOut} title="Sign out" aria-label="Sign out">{(user.user_metadata?.full_name || user.email || 'U').slice(0, 1).toUpperCase()}</button> : <button className="signin-button" onClick={signIn}>Sign in <ArrowUpRight size={15} /></button>}<button className="mobile-toggle" onClick={() => setMobileMenu(!mobileMenu)} aria-label="Toggle menu">{mobileMenu ? <X /> : <Menu />}</button></div>
     </header>
-    <main id="top">
+    <main id="top" className={`main-${page}`}>
+      <section className="checkout-page">
+        <button className="checkout-back" onClick={() => setPage('marketplace')}><ArrowLeft size={15} /> Continue shopping</button>
+        <div className="checkout-heading"><div className="eyebrow"><span className="eyebrow-line" /> Your basket</div><h1>Checkout<span className="brand-period">.</span></h1><p>Review your finds and connect with their sellers.</p></div>
+        {cart.length === 0 ? <div className="checkout-empty"><ShoppingBag size={25} /><h2>Your basket is taking a little break.</h2><p>Find something lovely and add it to your basket.</p><button className="button-primary" onClick={() => setPage('marketplace')}>Browse finds <ArrowRight size={16} /></button></div> : <div className="checkout-layout"><div className="checkout-items">{cart.map((item) => <article className="checkout-item" key={item.id}><img src={item.image || sampleItems[0].image} alt="" /><div className="checkout-item-info"><small>{item.category} · {item.condition}</small><h2>{item.title}</h2><span>{item.location}</span><strong>{money.format(item.price)}</strong></div><button className="remove-item" onClick={() => setCart((current) => current.filter((entry) => entry.id !== item.id))} aria-label={`Remove ${item.title} from basket`}><X size={17} /></button></article>)}<div className="checkout-total"><span>Basket total</span><strong>{money.format(cart.reduce((sum, item) => sum + item.price, 0))}</strong></div></div><aside className="checkout-summary"><div className="summary-icon"><ShieldCheck size={20} /></div><h2>No payment just yet.</h2><p>The Shop doesn’t process payments. Sign in to contact each seller and arrange payment and collection directly.</p>{user ? <button className="button-primary form-submit" disabled={busy} onClick={submitCheckout}>{busy ? 'Contacting sellers…' : 'Continue with sellers'} <ArrowRight size={16} /></button> : <><button className="button-primary form-submit" onClick={() => setModal({ type: 'signin', reason: 'checkout' })}>Sign in to continue <ArrowRight size={16} /></button><small className="checkout-gate-note">You can check out with this find as a guest. Sign in to add more items or see saved finds.</small></>}</aside></div>}
+      </section>
+      <section className="saved-page"><button className="checkout-back" onClick={() => setPage('marketplace')}><ArrowLeft size={15} /> Back to finds</button><div className="checkout-heading"><div className="eyebrow"><span className="eyebrow-line" /> Kept close</div><h1>Your saved finds<span className="brand-period">.</span></h1><p>Your favourites, all in one place.</p></div>{favorites.length ? <div className="listing-grid">{items.filter((item) => favorites.includes(item.id)).map((item) => <article className="listing-card" key={item.id}><div className="listing-image" role="button" tabIndex={0} onClick={() => setModal({ type: 'item', item })}><img src={item.image || sampleItems[0].image} alt={item.title} /><span className="item-condition">{item.condition}</span></div><div className="listing-details"><div className="item-category">{item.category}</div><h3>{item.title}</h3><div className="listing-bottom"><strong>{money.format(item.price)}</strong><span>{item.location}</span></div><button className="button-text" onClick={() => toggleFavorite(item.id)}>Remove saved find <X size={14} /></button></div></article>)}</div> : <div className="checkout-empty"><Heart size={25} /><h2>No saved finds yet.</h2><p>Tap the heart on a listing to keep it here for later.</p><button className="button-primary" onClick={() => setPage('marketplace')}>Explore the marketplace <ArrowRight size={16} /></button></div>}</section>
       <section className="hero"><div className="hero-copy"><div className="eyebrow"><span className="eyebrow-line" /> A marketplace with a little more meaning</div><h1>Good things,<br /><span>passed on.</span></h1><p>Find the pieces that feel like they were waiting for you. Give the things you love a new place to belong.</p><div className="hero-buttons"><a className="button-primary" href="#marketplace">Explore the marketplace <ArrowRight size={17} /></a><button className="button-text" onClick={() => user ? setModal({ type: 'sell' }) : setModal({ type: 'signin' })}>I have something to sell <ArrowUpRight size={16} /></button></div><div className="hero-trust"><div className="avatar-stack"><span>T</span><span>M</span><span>A</span><span>+</span></div><div><strong>A community that cares</strong><small>Thoughtful finds, better prices, less waste</small></div></div></div><div className="hero-visual"><div className="hero-photo"><img src="https://images.unsplash.com/photo-1494438639946-1ebd1d20bf85?auto=format&fit=crop&w=1200&q=90" alt="A warm, lived-in home with thoughtfully chosen furniture" /><div className="photo-wash" /></div><div className="float-card"><div className="float-card-icon"><Leaf size={18} /></div><div><small>A lovely little thought</small><strong>One less thing made new.</strong></div><span className="float-sparkle">✳</span></div><div className="hero-stamp"><span>find it<br />love it<br />pass it on</span><ArrowDown size={17} /></div><div className="photo-caption">A softer way to find your next favourite thing</div></div></section>
       <section className="values-strip" id="our-promise"><div className="value"><span className="value-icon"><Heart size={18} /></span><div><strong>Curated with care</strong><small>Real finds from real people</small></div></div><span className="value-divider" /><div className="value"><span className="value-icon"><ShieldCheck size={19} /></span><div><strong>People come first</strong><small>Connect directly, shop with care</small></div></div><span className="value-divider" /><div className="value"><span className="value-icon"><Leaf size={19} /></span><div><strong>A lighter footprint</strong><small>Good for your home, lighter on ours</small></div></div><a href="#how-it-works" className="values-link">The way we do things <ArrowRight size={15} /></a></section>
       <section className="market-section" id="marketplace"><div className="section-heading"><div><div className="eyebrow"><span className="eyebrow-line" /> A few things worth finding</div><h2>The good finds<span className="brand-period">.</span></h2><p>Pieces with a past, ready for whatever comes next.</p></div><a className="browse-all" href="#marketplace">Browse all finds <ArrowRight size={16} /></a></div>
@@ -113,9 +174,9 @@ function App() {
     {notice && <div className="toast" role="status"><Check size={17} /> {notice}<button onClick={() => setNotice('')} aria-label="Dismiss"><X size={15} /></button></div>}
     {modal && <div className="modal-backdrop" onClick={() => !busy && setModal(null)}><div className={`modal-card ${modal.type === 'item' ? 'item-modal' : ''}`} role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}><button className="modal-close" onClick={() => setModal(null)} aria-label="Close"><X size={19} /></button>
       {modal.type === 'sell' && <><div className="modal-kicker"><span className="value-icon"><Tag size={17} /></span> Pass it on</div><h2>List something lovely.</h2><p className="modal-intro">A few details help someone find their next favourite thing.</p><form className="listing-form" onSubmit={submitListing}><label>What are you sharing?<input name="title" placeholder="A name that says it all" required maxLength="100" /></label><div className="form-row"><label>Category<select name="category" required>{categories.slice(1).map((x) => <option key={x}>{x}</option>)}</select></label><label>Condition<select name="condition"><option>Pre-loved</option><option>Like new</option><option>Good</option><option>Well-loved</option></select></label></div><div className="form-row"><label>Price (₦)<input name="price" type="number" min="1" placeholder="0" required /></label><label>Your neighbourhood<input name="location" placeholder="e.g. Yaba, Lagos" required /></label></div><label>Photo URL<input name="image" type="url" placeholder="https://…" /></label><label>A little about it<textarea name="description" rows="3" placeholder="What should someone know?" maxLength="500" /></label><button className="button-primary form-submit" disabled={busy}>{busy ? 'Sharing…' : 'Share this find'} <ArrowRight size={16} /></button><small className="form-privacy"><ShieldCheck size={13} /> Your email stays private. We only share it when you send an inquiry.</small></form></>}
-      {modal.type === 'signin' && <><div className="signin-illustration"><ShoppingBag size={27} /></div><div className="eyebrow centered"><span className="eyebrow-line" /> Good to have you here</div><h2>Come on in.</h2><p className="modal-intro centered-copy">Sign in to find your next favourite thing, or pass something lovely along.</p><button className="google-button" onClick={signIn}><GoogleMark /> Continue with Google <ArrowRight size={16} /></button><small className="signin-note"><ShieldCheck size={13} /> A safe, simple sign-in. We never share your details.</small></>}
+      {modal.type === 'signin' && <><div className="signin-illustration"><ShoppingBag size={27} /></div><div className="eyebrow centered"><span className="eyebrow-line" /> Good to have you here</div><h2>Come on in.</h2><p className="modal-intro centered-copy">{modal.reason === 'more-items' ? 'Your first find is in the basket. Sign in to add more items and see your saved finds.' : modal.reason === 'saved' ? 'Sign in to keep your saved finds and come back to them later.' : modal.reason === 'checkout' ? 'Your basket is ready. Sign in to contact the sellers and arrange your finds.' : modal.reason === 'sell' ? 'Sign in to share something lovely with the neighbourhood.' : 'Sign in to find your next favourite thing, or pass something lovely along.'}</p><button className="google-button" onClick={signIn}><GoogleMark /> Continue with Google <ArrowRight size={16} /></button><small className="signin-note"><ShieldCheck size={13} /> A safe, simple sign-in. We never share your details.</small></>}
       {modal.type === 'config' && <><div className="modal-kicker"><span className="value-icon"><ShieldCheck size={17} /></span> A quick setup note</div><h2>Almost ready.</h2><p className="modal-intro">Google sign-in connects through your Supabase project. Add the following values to a local <code>.env</code> file, then enable Google under Authentication → Providers in Supabase.</p><div className="config-callout">VITE_SUPABASE_URL<br />VITE_SUPABASE_ANON_KEY<br />SUPABASE_SERVICE_ROLE_KEY<br />MAILGUN_API_KEY · MAILGUN_DOMAIN</div><button className="button-primary form-submit" onClick={() => setModal(null)}>Got it <Check size={16} /></button></>}
-      {modal.type === 'item' && <><div className="item-modal-image"><img src={modal.item.image || sampleItems[0].image} alt={modal.item.title} /></div><div className="item-modal-content"><div className="item-category">{modal.item.category} <span>·</span> {modal.item.condition}</div><h2>{modal.item.title}</h2><strong className="item-modal-price">{money.format(modal.item.price)}</strong><p>{modal.item.description || 'A thoughtful find, ready for a new home.'}</p><div className="item-modal-seller"><span className="seller-avatar">{(modal.item.seller_name || 'S').slice(0, 1)}</span><span>Listed with love by <strong>{modal.item.seller_name || 'a neighbour'}</strong><small>{modal.item.location}</small></span></div><button className="button-primary form-submit" disabled={busy} onClick={() => buyItem(modal.item)}>{busy ? 'Sending…' : 'I’m interested'} <ArrowRight size={16} /></button><small className="form-privacy"><ShieldCheck size={13} /> No payment here. You’ll connect and arrange the details together.</small></div></>}
+      {modal.type === 'item' && <><div className="item-modal-image"><img src={modal.item.image || sampleItems[0].image} alt={modal.item.title} /></div><div className="item-modal-content"><div className="item-category">{modal.item.category} <span>·</span> {modal.item.condition}</div><h2>{modal.item.title}</h2><strong className="item-modal-price">{money.format(modal.item.price)}</strong><p>{modal.item.description || 'A thoughtful find, ready for a new home.'}</p><div className="item-modal-seller"><span className="seller-avatar">{(modal.item.seller_name || 'S').slice(0, 1)}</span><span>Listed with love by <strong>{modal.item.seller_name || 'a neighbour'}</strong><small>{modal.item.location}</small></span></div><button className="button-primary form-submit" disabled={busy} onClick={() => addToCart(modal.item)}>{cart.some((item) => item.id === modal.item.id) ? 'View basket' : 'Add to basket'} <ArrowRight size={16} /></button><small className="form-privacy"><ShieldCheck size={13} /> {user ? 'You’ll contact the seller to arrange payment and collection.' : 'You can check out with your first find as a guest.'}</small></div></>}
     </div></div>}
   </div>;
 }
