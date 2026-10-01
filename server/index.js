@@ -31,6 +31,7 @@ const mailgun = mailgunReady
       ...(process.env.MAILGUN_API_URL ? { url: process.env.MAILGUN_API_URL } : {}),
     })
   : null;
+const authConfirmationSentAt = new Map();
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, databaseConfigured: ready, emailConfigured: mailgunReady }));
 
@@ -78,6 +79,37 @@ app.post('/api/notifications', authenticatedUser, async (req, res) => {
   } catch (error) {
     console.error('Notification failed:', error.message);
     return res.status(502).json({ error: error.message || 'Could not send confirmation email.' });
+  }
+});
+
+app.post('/api/auth-confirmations', authenticatedUser, async (req, res) => {
+  try {
+    const { action } = req.body || {};
+    if (!['signup', 'signin'].includes(action)) return res.status(400).json({ error: 'Invalid sign-in confirmation request.' });
+    if (!req.user.email) return res.status(400).json({ error: 'There is no email address on this account.' });
+
+    const dedupeKey = `${req.user.id}:${action}`;
+    const sentAt = authConfirmationSentAt.get(dedupeKey) || 0;
+    if (Date.now() - sentAt < 60_000) return res.json({ sent: true, deduplicated: true });
+
+    const name = req.user.user_metadata?.full_name || 'there';
+    const isSignup = action === 'signup';
+    const subject = isSignup ? 'Your The Shop account is ready' : 'Your sign-in to The Shop is confirmed';
+    const text = isSignup
+      ? `Hi ${name},\n\nYour The Shop account has been created. Because you signed in with Google, Google confirms your email address as part of that process; you do not need to follow a separate verification link.\n\nIf you did not create this account, secure your Google account and contact us.\n\nThe Shop`
+      : `Hi ${name},\n\nThis is a confirmation that your account was just used to sign in to The Shop.\n\nIf this was not you, secure your Google account and contact us.\n\nThe Shop`;
+    const outcome = await sendMail(req.user.email, subject, text);
+    if (outcome.sent) {
+      authConfirmationSentAt.set(dedupeKey, Date.now());
+      if (authConfirmationSentAt.size > 1000) {
+        const cutoff = Date.now() - 60_000;
+        for (const [key, timestamp] of authConfirmationSentAt) if (timestamp < cutoff) authConfirmationSentAt.delete(key);
+      }
+    }
+    return res.json(outcome);
+  } catch (error) {
+    console.error('Sign-in confirmation failed:', error.message);
+    return res.status(502).json({ error: error.message || 'Could not send the sign-in confirmation email.' });
   }
 });
 

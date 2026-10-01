@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUpRight, Check, ChevronDown, Heart, Leaf, LogOut, Menu, Package, Plus, Search, ShieldCheck, ShoppingBag, SlidersHorizontal, Sparkles, Tag, UserRound, X } from 'lucide-react';
 import { supabase, supabaseConfigured, supabaseConfigIssue } from './supabase.js';
 
@@ -45,11 +45,22 @@ function App() {
   const [favorites, setFavorites] = useState([]);
   const [cart, setCart] = useState(readGuestCart);
   const [page, setPage] = useState(() => readGuestCart().length ? 'checkout' : 'marketplace');
+  const authEmailEvents = useRef(new Set());
 
   useEffect(() => {
     if (!supabaseConfigured) return;
     supabase.auth.getSession().then(({ data: { session } }) => setUser(session?.user ?? null));
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => setUser(session?.user ?? null));
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      setUser(session?.user ?? null);
+      if (event !== 'SIGNED_IN' || !session?.user?.email) return;
+      const eventKey = `${session.user.id}:${session.access_token}`;
+      if (authEmailEvents.current.has(eventKey)) return;
+      authEmailEvents.current.add(eventKey);
+      const createdAt = Date.parse(session.user.created_at || '');
+      const signedInAt = Date.parse(session.user.last_sign_in_at || '');
+      const isNewAccount = Number.isFinite(createdAt) && Number.isFinite(signedInAt) && Math.abs(signedInAt - createdAt) < 60_000;
+      window.setTimeout(() => sendAuthConfirmation(session, isNewAccount ? 'signup' : 'signin'), 0);
+    });
     return () => subscription.unsubscribe();
   }, []);
 
@@ -125,6 +136,22 @@ function App() {
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || 'Email could not be sent.');
     return result;
+  }
+  async function sendAuthConfirmation(session, action) {
+    try {
+      const response = await fetch('/api/auth-confirmations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify({ action }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(result.error || 'The sign-in confirmation email could not be sent.');
+      }
+      if (!result.sent) alertUser('You’re signed in, but confirmation emails are not configured yet.');
+    } catch (error) {
+      alertUser(error.message || 'The sign-in confirmation email could not be sent.');
+    }
   }
   function addToCart(item) {
     if (item.isDemo) { alertUser('This is a sample listing preview. Live seller listings will appear here.'); return; }

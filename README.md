@@ -17,7 +17,7 @@ The shop shows a varied, clearly marked sample catalogue while Supabase has no a
 
 See `.env.example` for the complete list. Use the Supabase project root URL (for example, `https://<project-ref>.supabase.co`) for both Supabase URL settings. `VITE_` values are public browser configuration; never put the Supabase service role key or Mailgun API key in a `VITE_` variable. Configure allowed OAuth redirect URLs for each deployed domain. Set `APP_URL` to the public site origin before deployment. For an EU Mailgun account, set `MAILGUN_API_URL=https://api.eu.mailgun.net`.
 
-The notification server uses `MAILGUN_API_KEY` (and accepts `API_KEY` as a compatibility alias for Mailgun's sample snippet), `MAILGUN_DOMAIN`, and `MAILGUN_FROM`. It sends only transactional listing and buyer inquiry emails; no fixed recipient address is embedded in the app.
+The notification server uses `MAILGUN_API_KEY` (and accepts `API_KEY` as a compatibility alias for Mailgun's sample snippet), `MAILGUN_DOMAIN`, and `MAILGUN_FROM`. It sends listing and buyer inquiry emails, plus a confirmation after Google sign-in and an account-created message for a newly created Google account. Account confirmation recipients are taken from the authenticated Supabase user; no fixed recipient address is embedded in the app. Google verifies the email during OAuth, so the account-created message is informational and does not replace Google or Supabase identity verification.
 
 ## Data and trust
 
