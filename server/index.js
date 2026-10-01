@@ -2,6 +2,8 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import { createClient } from '@supabase/supabase-js';
+import FormData from 'form-data';
+import Mailgun from 'mailgun.js';
 
 const app = express();
 const port = Number(process.env.PORT || 3001);
@@ -20,7 +22,15 @@ function isProjectRoot(value) {
 
 const ready = Boolean(isProjectRoot(process.env.SUPABASE_URL) && process.env.SUPABASE_SERVICE_ROLE_KEY && !process.env.SUPABASE_SERVICE_ROLE_KEY.includes('your-supabase'));
 const admin = ready ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false, autoRefreshToken: false } }) : null;
-const mailgunReady = Boolean(process.env.MAILGUN_API_KEY && process.env.MAILGUN_DOMAIN && process.env.MAILGUN_FROM);
+const mailgunApiKey = process.env.MAILGUN_API_KEY || process.env.API_KEY;
+const mailgunReady = Boolean(mailgunApiKey && !mailgunApiKey.includes('API_KEY') && process.env.MAILGUN_DOMAIN && process.env.MAILGUN_FROM);
+const mailgun = mailgunReady
+  ? new Mailgun(FormData).client({
+      username: 'api',
+      key: mailgunApiKey,
+      ...(process.env.MAILGUN_API_URL ? { url: process.env.MAILGUN_API_URL } : {}),
+    })
+  : null;
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, databaseConfigured: ready, emailConfigured: mailgunReady }));
 
@@ -35,10 +45,12 @@ async function authenticatedUser(req, res, next) {
 
 async function sendMail(to, subject, text) {
   if (!mailgunReady) return { sent: false };
-  const body = new URLSearchParams({ from: process.env.MAILGUN_FROM, to, subject, text });
-  const auth = Buffer.from(`api:${process.env.MAILGUN_API_KEY}`).toString('base64');
-  const response = await fetch(`https://api.mailgun.net/v3/${process.env.MAILGUN_DOMAIN}/messages`, { method: 'POST', headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' }, body });
-  if (!response.ok) throw new Error('The email service could not send your message. Please try again.');
+  await mailgun.messages.create(process.env.MAILGUN_DOMAIN, {
+    from: process.env.MAILGUN_FROM,
+    to,
+    subject,
+    text,
+  });
   return { sent: true };
 }
 
